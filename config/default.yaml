@@ -1,0 +1,34 @@
+# White Whale default configuration.
+# Override locally by creating config/local.yaml (gitignored) and pointing
+# the CLI at it with --config config/local.yaml.
+
+db:
+  path: ./whitewhale.db
+
+ingest:
+  rtds_url: wss://ws-live-data.polymarket.com
+  reconnect_max_backoff_seconds: 60
+  log_unknown_message_types: true
+
+whale_filter:
+  # Phase 2 will read these; Phase 1 records everything.
+  min_size_usdc: 5000
+  min_market_liquidity_usdc: 50000
+
+scoring:
+  # Default weights from docs/research-notes.md §5.
+  # Sum must equal 1.0. Hot-reloadable in Phase 6.
+  weights:
+    wallet_pnl_score:          0.20
+    wallet_winrate_score:      0.15
+    history_depth_score:       0.05
+    conviction_size_score:     0.15
+    time_to_resolution_score:  0.10
+    price_impact_score:        0.05
+    non_arb_score:             0.10
+    non_mm_score:              0.10
+    organic_price_score:       0.10
+  thresholds:
+    round_trip_window_seconds: 60
+    mid_price_band_bps:        30
+    mm_turnover_lookback:      50
