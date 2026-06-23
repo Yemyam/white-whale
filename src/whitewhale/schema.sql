@@ -1,16 +1,18 @@
 -- White Whale SQLite schema. WAL and other pragmas set in db.py.
 
 CREATE TABLE IF NOT EXISTS markets (
-    condition_id     TEXT PRIMARY KEY,
-    slug             TEXT NOT NULL DEFAULT '',
-    question         TEXT NOT NULL DEFAULT '',
-    event_slug       TEXT,
-    liquidity_usdc   REAL,
-    resolves_at      TEXT,
-    resolved         INTEGER NOT NULL DEFAULT 0,
-    outcome_resolved INTEGER,
-    first_seen       TEXT NOT NULL,
-    last_seen        TEXT NOT NULL
+    condition_id        TEXT PRIMARY KEY,
+    slug                TEXT NOT NULL DEFAULT '',
+    question            TEXT NOT NULL DEFAULT '',
+    event_slug          TEXT,
+    liquidity_usdc      REAL,
+    current_price       REAL,
+    resolves_at         TEXT,
+    resolved            INTEGER NOT NULL DEFAULT 0,
+    outcome_resolved    INTEGER,
+    metadata_updated_at TEXT,
+    first_seen          TEXT NOT NULL,
+    last_seen           TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_markets_slug ON markets(slug);
@@ -19,6 +21,7 @@ CREATE INDEX IF NOT EXISTS idx_markets_resolves_at ON markets(resolves_at);
 CREATE TABLE IF NOT EXISTS wallets (
     address          TEXT PRIMARY KEY,
     display_name     TEXT,
+    pseudonym        TEXT,
     label            TEXT,
     cluster_id       TEXT,
     first_seen       TEXT NOT NULL,

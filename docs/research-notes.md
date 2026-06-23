@@ -37,7 +37,12 @@ All claims here cite a source. Anything we'll need to verify empirically against
 - Polymarket maintains multiple subgraphs: `activity-subgraph`, `pnl-subgraph`, `wallet-subgraph`, `orderbook-subgraph`, `oi-subgraph`, `fpmm-subgraph`, `sports-oracle-subgraph`
 - **Used for:** initial wallet-history backfill (PnL, win rate, trade count). Heavy job — run on laptop, not Pi.
 - Source: [Polymarket/polymarket-subgraph](https://github.com/Polymarket/polymarket-subgraph)
-- **[CALIBRATE]** confirm which subgraph endpoint is publicly queryable and whether we need a Goldsky/TheGraph API key.
+- **Confirmed (Phase 1, 2026-05-21):**
+  - Public endpoint: `https://api.goldsky.com/api/public/project_cl6mb8i9h0003e201j6li0diw/subgraphs/orderbook-subgraph/0.0.1/gn`. No API key.
+  - `activity-subgraph` and `positions-subgraph` return 404 at the current public project id; only `orderbook-subgraph` (v0.0.1) and `pnl-subgraph` (v0.0.14) are live.
+  - `OrderFilledEvent` carries `maker`/`taker`/`makerAssetId`/`takerAssetId`/`makerAmountFilled`/`takerAmountFilled` — **no `conditionId`, `outcome`, or `outcome_index`**. Token id → condition id must be resolved separately (Gamma `clobTokenIds`). Phase 1 ingestor writes sentinel values (`condition_id=''`, `outcome=''`, `outcome_index=-1`) and defers the join.
+  - **Indexing lag ≈ 3 weeks** behind real time (latest event observed at ts 1777374040 ≈ 2026-04-28 UTC against system clock 2026-05-21). Backfills must run with `--since 0`; narrow date windows near "now" silently return 0 rows. Biggest gotcha for downstream phases.
+  - GraphQL `or` requires filters on each branch (`{ or: [{maker, timestamp_gte, id_gt}, {taker, timestamp_gte, id_gt}] }`); flat-with-`or` is rejected.
 
 ### 1.5 Other (probably won't need in v1)
 - **Polygon RPC** — direct on-chain reads. Last resort.

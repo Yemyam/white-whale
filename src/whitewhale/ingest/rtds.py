@@ -130,12 +130,16 @@ def _normalize_timestamp(ts: int | str) -> datetime:
 def persist(conn: sqlite3.Connection, trade: RawTrade) -> None:
     """Write a parsed trade to SQLite. Idempotent on (tx_hash, log_index).
 
-    Wallet attribution is deferred. A follow-up resolver job (Polygon RPC or
-    subgraph) will fill in `wallet` and set `wallet_resolved = 1`.
+    RTDS includes `proxyWallet` on every trade, so wallet attribution happens
+    inline - no follow-up resolver needed. We also upsert the wallets row so
+    pseudonym/display_name stay fresh, while leaving `label` / `cluster_id`
+    untouched (those come from the labeled-wallets seed).
     """
     occurred_at = _normalize_timestamp(trade.timestamp)
     size_usdc = trade.size * trade.price
     now_iso = datetime.now(timezone.utc).isoformat()
+    wallet = trade.proxyWallet  # already lowercased by the validator
+    wallet_resolved = 1 if wallet else 0
 
     conn.execute(
         """
@@ -157,6 +161,25 @@ def persist(conn: sqlite3.Connection, trade: RawTrade) -> None:
         ),
     )
 
+    if wallet:
+        conn.execute(
+            """
+            INSERT INTO wallets (address, display_name, pseudonym, first_seen, last_seen)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(address) DO UPDATE SET
+                display_name = COALESCE(NULLIF(excluded.display_name, ''), wallets.display_name),
+                pseudonym    = COALESCE(NULLIF(excluded.pseudonym, ''), wallets.pseudonym),
+                last_seen    = excluded.last_seen
+            """,
+            (
+                wallet,
+                trade.name or "",
+                trade.pseudonym or "",
+                now_iso,
+                now_iso,
+            ),
+        )
+
     conn.execute(
         """
         INSERT OR IGNORE INTO trades
@@ -169,8 +192,8 @@ def persist(conn: sqlite3.Connection, trade: RawTrade) -> None:
             trade.transactionHash,
             0,
             occurred_at.isoformat(),
-            None,
-            0,
+            wallet,
+            wallet_resolved,
             trade.conditionId,
             trade.asset,
             trade.outcome,

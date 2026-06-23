@@ -97,7 +97,7 @@ Notes:
 | Phase | Title | Status | Effort |
 |---|---|---|---|
 | 0 | Research smart-money detection + labeled wallet seed | done | 1-2 days |
-| 1 | Ingestion (WS + REST + subgraph backfill) | in progress | 1-2 days |
+| 1 | Ingestion (WS + REST + subgraph backfill) | done | 1-2 days |
 | 2 | Whale filter | pending | 0.5 day |
 | 3 | Copy score engine | pending | 2-3 days |
 | 4 | Alert emission (JSON drop) | pending | 0.5 day |
@@ -110,17 +110,14 @@ Notes:
 - `data/labeled-wallets.csv` - seeded with the Theo cluster (Theo4, Fredi9999, PrincessCaro, Michie)
 - `data/README.md` - CSV schema and population plan
 
-### Phase 1 - Ingestion (in progress)
+### Phase 1 - Ingestion (done)
 - Project skeleton: `pyproject.toml`, `.gitignore`, `.python-version`, `config/default.yaml`
-- SQLite schema + connection helper (`src/whitewhale/db.py`, `schema.sql`)
+- SQLite schema + connection helper (`src/whitewhale/db.py`, `schema.sql`); idempotent ALTER-based migrations
 - Pydantic models tolerant of RTDS schema drift (`models.py`)
-- RTDS WebSocket client with auto-reconnect + certifi SSL context (`ingest/rtds.py`)
-- CLI: `init-db`, `tap`, `ingest` (`cli.py`)
-- Verified live via `tap`: RTDS payload includes `proxyWallet` - wallet attribution comes for free, no Polygon RPC resolver needed
-- Remaining in Phase 1:
-  - Parse `proxyWallet`, `pseudonym`, `name` into trades + wallets tables
-  - `ingest/gamma.py` - REST client for market metadata enrichment (liquidity, resolves_at, current_price)
-  - `ingest/subgraph.py` - historical wallet history backfill via Polymarket subgraph (run on laptop)
+- RTDS WebSocket client with auto-reconnect + certifi SSL context (`ingest/rtds.py`); writes `proxyWallet` → `trades.wallet`, upserts `wallets` with `pseudonym`/`display_name` while preserving seed `label`/`cluster_id`
+- Gamma REST enricher (`ingest/gamma.py`): pulls `liquidity_usdc`, `current_price`, `resolves_at` for known markets; idempotent under `refresh_max_age_seconds`
+- Subgraph backfill (`ingest/subgraph.py`): pulls every `OrderFilledEvent` for a wallet from Goldsky `orderbook-subgraph`. Sentinel values for `condition_id`/`outcome`/`outcome_index` (subgraph doesn't carry them); token→condition map deferred to Phase 3/5. **Subgraph indexing lags ~3 weeks** (see `docs/research-notes.md` §1.4) — backfills must use `--since 0`.
+- CLI: `init-db`, `tap`, `ingest`, `enrich-markets`, `backfill-wallets` (`cli.py`)
 
 ### Phase 2 - Whale filter
 - Configurable rule: `size_usdc >= threshold AND market.liquidity_usdc >= threshold`

@@ -9,6 +9,19 @@ ingest:
   rtds_url: wss://ws-live-data.polymarket.com
   reconnect_max_backoff_seconds: 60
   log_unknown_message_types: true
+  gamma:
+    base_url: https://gamma-api.polymarket.com
+    request_timeout_seconds: 10
+    # Honor Gamma's ~300 req / 10 s on /markets. 0.05s pace = 200 req/10s.
+    # Token-bucket upgrade deferred to Phase 6.
+    min_request_interval_seconds: 0.05
+    refresh_max_age_seconds: 3600
+    refresh_batch_limit: 100
+  subgraph:
+    # Polymarket's public Goldsky orderbook-subgraph. No API key.
+    url: https://api.goldsky.com/api/public/project_cl6mb8i9h0003e201j6li0diw/subgraphs/orderbook-subgraph/0.0.1/gn
+    request_timeout_seconds: 30
+    min_request_interval_seconds: 0.1
 
 whale_filter:
   # Phase 2 will read these; Phase 1 records everything.

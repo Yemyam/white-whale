@@ -27,3 +27,19 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
 def init_schema(conn: sqlite3.Connection) -> None:
     """Create all tables and indexes. Idempotent."""
     conn.executescript(SCHEMA_PATH.read_text())
+    _apply_migrations(conn)
+
+
+def _apply_migrations(conn: sqlite3.Connection) -> None:
+    # CREATE TABLE IF NOT EXISTS skips column additions on existing DBs;
+    # ALTER TABLE ... ADD COLUMN is the cheapest forward-compat path.
+    for stmt in (
+        "ALTER TABLE wallets ADD COLUMN pseudonym TEXT",
+        "ALTER TABLE markets ADD COLUMN current_price REAL",
+        "ALTER TABLE markets ADD COLUMN metadata_updated_at TEXT",
+    ):
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                raise

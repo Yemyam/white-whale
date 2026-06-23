@@ -12,7 +12,9 @@ import click
 
 from whitewhale import config as config_loader
 from whitewhale import db as db_module
+from whitewhale.ingest.gamma import GammaClient, enrich_pending
 from whitewhale.ingest.rtds import RTDSClient, persist
+from whitewhale.ingest.subgraph import SubgraphClient, backfill_wallet
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -101,6 +103,107 @@ def ingest(ctx: click.Context) -> None:
             if count % 100 == 0:
                 logging.info("persisted %d trades", count)
         logging.info("ingest stopped after %d trades", count)
+
+    try:
+        asyncio.run(_run())
+    finally:
+        conn.close()
+
+
+@main.command("enrich-markets")
+@click.option("--limit", type=int, default=None, help="Override refresh_batch_limit.")
+@click.option(
+    "--max-age-seconds",
+    type=int,
+    default=None,
+    help="Override refresh_max_age_seconds. Use 0 to refresh all rows.",
+)
+@click.option("--loop", "continuous", is_flag=True, help="Loop forever (Phase-6-lite for systemd).")
+@click.option("--interval", type=int, default=300, help="Seconds between batches in --loop mode.")
+@click.pass_context
+def enrich_markets(
+    ctx: click.Context,
+    limit: int | None,
+    max_age_seconds: int | None,
+    continuous: bool,
+    interval: int,
+) -> None:
+    """Fetch market metadata from Polymarket Gamma and upsert into SQLite."""
+    cfg = ctx.obj["config"]
+    db_path = cfg["db"]["path"]
+    gcfg = cfg["ingest"]["gamma"]
+    eff_limit = limit if limit is not None else gcfg["refresh_batch_limit"]
+    eff_max_age = (
+        max_age_seconds if max_age_seconds is not None else gcfg["refresh_max_age_seconds"]
+    )
+
+    conn = db_module.connect(db_path)
+    db_module.init_schema(conn)
+
+    async def _run() -> None:
+        async with GammaClient(
+            base_url=gcfg["base_url"],
+            timeout_seconds=gcfg["request_timeout_seconds"],
+            min_request_interval_seconds=gcfg["min_request_interval_seconds"],
+        ) as client:
+            while True:
+                refreshed = await enrich_pending(
+                    conn,
+                    client,
+                    limit=eff_limit,
+                    max_age_seconds=eff_max_age,
+                )
+                if not continuous:
+                    click.echo(f"refreshed {refreshed} markets")
+                    return
+                await asyncio.sleep(interval)
+
+    try:
+        asyncio.run(_run())
+    finally:
+        conn.close()
+
+
+@main.command("backfill-wallets")
+@click.argument("wallets", nargs=-1, required=True)
+@click.option(
+    "--since",
+    "since_iso",
+    type=str,
+    default=None,
+    help="Only fetch fills on or after this date (YYYY-MM-DD, UTC). Omit for full history.",
+)
+@click.pass_context
+def backfill_wallets(ctx: click.Context, wallets: tuple[str, ...], since_iso: str | None) -> None:
+    """Backfill historical trades for one or more wallet addresses via the
+    Polymarket subgraph. Laptop-only; scp the DB to the Pi after.
+    """
+    import datetime as _dt  # local to keep top imports tidy
+
+    cfg = ctx.obj["config"]
+    db_path = cfg["db"]["path"]
+    scfg = cfg["ingest"]["subgraph"]
+
+    since_ts = 0
+    if since_iso:
+        since_ts = int(
+            _dt.datetime.fromisoformat(since_iso)
+            .replace(tzinfo=_dt.timezone.utc)
+            .timestamp()
+        )
+
+    conn = db_module.connect(db_path)
+    db_module.init_schema(conn)
+
+    async def _run() -> None:
+        async with SubgraphClient(
+            url=scfg["url"],
+            timeout_seconds=scfg["request_timeout_seconds"],
+            min_request_interval_seconds=scfg["min_request_interval_seconds"],
+        ) as client:
+            for w in wallets:
+                written = await backfill_wallet(conn, client, w, since_ts=since_ts)
+                click.echo(f"{w}: wrote {written} trades")
 
     try:
         asyncio.run(_run())

@@ -32,11 +32,19 @@ class RawTrade(BaseModel):
     eventSlug: str | None = None
     slug: str | None = None
     title: str | None = None
+    proxyWallet: str | None = None
+    pseudonym: str | None = None
+    name: str | None = None
 
     @field_validator("transactionHash")
     @classmethod
     def _lower_hash(cls, v: str) -> str:
         return v.lower()
+
+    @field_validator("proxyWallet")
+    @classmethod
+    def _lower_wallet(cls, v: str | None) -> str | None:
+        return v.lower() if v else v
 
 
 class NormalizedTrade(BaseModel):
