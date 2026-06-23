@@ -98,7 +98,7 @@ Notes:
 |---|---|---|---|
 | 0 | Research smart-money detection + labeled wallet seed | done | 1-2 days |
 | 1 | Ingestion (WS + REST + subgraph backfill) | done | 1-2 days |
-| 2 | Whale filter | pending | 0.5 day |
+| 2 | Whale filter | done | 0.5 day |
 | 3 | Copy score engine | pending | 2-3 days |
 | 4 | Alert emission (JSON drop) | pending | 0.5 day |
 | 5 | Backtester | pending | 2-3 days |
@@ -119,9 +119,13 @@ Notes:
 - Subgraph backfill (`ingest/subgraph.py`): pulls every `OrderFilledEvent` for a wallet from Goldsky `orderbook-subgraph`. Sentinel values for `condition_id`/`outcome`/`outcome_index` (subgraph doesn't carry them); token→condition map deferred to Phase 3/5. **Subgraph indexing lags ~3 weeks** (see `docs/research-notes.md` §1.4) — backfills must use `--since 0`.
 - CLI: `init-db`, `tap`, `ingest`, `enrich-markets`, `backfill-wallets` (`cli.py`)
 
-### Phase 2 - Whale filter
-- Configurable rule: `size_usdc >= threshold AND market.liquidity_usdc >= threshold`
-- Dedupe: same wallet + market within N seconds = one event
+### Phase 2 - Whale filter (done)
+- `filter.py`: `passes_thresholds` (pure size + liquidity floor predicate), `WhaleFilter` (stateful per-wallet+market dedupe for the live stream), `iter_whale_trades` (batch DB scan running identical logic)
+- Configurable rule: `size_usdc >= min_size_usdc AND market.liquidity_usdc >= min_market_liquidity_usdc`
+- Dedupe window measured from the last *accepted* event, so a churning wallet emits at most one event per `dedupe_window_seconds` rather than going silent
+- Unknown (un-enriched) market liquidity fails the floor unless `allow_unknown_liquidity` is set
+- CLI: `whales` scans ingested trades and prints/JSON-dumps what the filter would emit
+- Config keys added: `whale_filter.dedupe_window_seconds`, `whale_filter.allow_unknown_liquidity`
 
 ### Phase 3 - Copy score engine
 - 9 sub-scores computed from precomputed `wallet_stats` table + the trade + market orderbook

@@ -12,6 +12,7 @@ import click
 
 from whitewhale import config as config_loader
 from whitewhale import db as db_module
+from whitewhale.filter import WhaleConfig, iter_whale_trades
 from whitewhale.ingest.gamma import GammaClient, enrich_pending
 from whitewhale.ingest.rtds import RTDSClient, persist
 from whitewhale.ingest.subgraph import SubgraphClient, backfill_wallet
@@ -207,6 +208,71 @@ def backfill_wallets(ctx: click.Context, wallets: tuple[str, ...], since_iso: st
 
     try:
         asyncio.run(_run())
+    finally:
+        conn.close()
+
+
+@main.command("whales")
+@click.option(
+    "--since",
+    "since_iso",
+    type=str,
+    default=None,
+    help="Only scan trades on or after this date (YYYY-MM-DD, UTC).",
+)
+@click.option("--limit", type=int, default=None, help="Stop after N whale events.")
+@click.option("--json", "as_json", is_flag=True, help="Emit one JSON object per event.")
+@click.pass_context
+def whales(ctx: click.Context, since_iso: str | None, limit: int | None, as_json: bool) -> None:
+    """Scan ingested trades through the Phase 2 whale filter and print events.
+
+    Inspection aid before the score engine (Phase 3) exists: shows exactly which
+    trades clear the size + liquidity floors and survive wallet+market dedupe.
+    """
+    import datetime as _dt  # local to keep top imports tidy
+
+    cfg = ctx.obj["config"]
+    since_norm: str | None = None
+    if since_iso:
+        since_norm = (
+            _dt.datetime.fromisoformat(since_iso)
+            .replace(tzinfo=_dt.timezone.utc)
+            .isoformat()
+        )
+
+    conn = db_module.connect(cfg["db"]["path"])
+    db_module.init_schema(conn)
+    wconfig = WhaleConfig.from_config(cfg)
+
+    try:
+        count = 0
+        for event in iter_whale_trades(conn, wconfig, since_iso=since_norm):
+            if as_json:
+                click.echo(
+                    json.dumps(
+                        {
+                            "tx_hash": event.tx_hash,
+                            "log_index": event.log_index,
+                            "occurred_at": event.occurred_at.isoformat(),
+                            "wallet": event.wallet,
+                            "condition_id": event.condition_id,
+                            "side": event.side,
+                            "outcome": event.outcome,
+                            "price": event.price,
+                            "size_usdc": event.size_usdc,
+                            "market_liquidity_usdc": event.market_liquidity_usdc,
+                        }
+                    )
+                )
+            else:
+                click.echo(
+                    f"{event.occurred_at.isoformat()}  {event.wallet}  "
+                    f"{event.side:4}  ${event.size_usdc:,.0f}  {event.condition_id}"
+                )
+            count += 1
+            if limit is not None and count >= limit:
+                break
+        click.echo(f"{count} whale events", err=True)
     finally:
         conn.close()
 

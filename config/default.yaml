@@ -24,9 +24,15 @@ ingest:
     min_request_interval_seconds: 0.1
 
 whale_filter:
-  # Phase 2 will read these; Phase 1 records everything.
+  # Phase 1 records every trade; Phase 2 selects whale events from them.
   min_size_usdc: 5000
   min_market_liquidity_usdc: 50000
+  # Same wallet + market inside this window collapses to one event, so a
+  # whale churning a position doesn't produce a burst of alerts.
+  dedupe_window_seconds: 90
+  # A trade whose market hasn't been enriched yet has unknown liquidity and
+  # can't clear the liquidity floor. Keep false so we don't alert blind.
+  allow_unknown_liquidity: false
 
 scoring:
   # Default weights from docs/research-notes.md §5.
