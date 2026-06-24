@@ -10,6 +10,7 @@ from pathlib import Path
 
 import click
 
+from whitewhale import backtest as backtest_module
 from whitewhale import config as config_loader
 from whitewhale import db as db_module
 from whitewhale.alert import AlertConfig, AlertEmitter
@@ -409,6 +410,151 @@ def alert(ctx: click.Context, since_iso: str | None, limit: int | None, dry_run:
         click.echo(f"{emitted} alerts from {considered} events considered", err=True)
     finally:
         conn.close()
+
+
+@main.command("backtest")
+@click.option(
+    "--since",
+    "since_iso",
+    type=str,
+    default=None,
+    help="Only replay trades on or after this date (YYYY-MM-DD, UTC).",
+)
+@click.option(
+    "--holdout-weeks",
+    type=float,
+    default=6.0,
+    help="Hold out the newest N weeks of trades for out-of-sample evaluation.",
+)
+@click.option(
+    "--min-score",
+    type=int,
+    default=None,
+    help="Alert threshold for the 'would-have-alerted' subset. Defaults to alerts.min_score.",
+)
+@click.option(
+    "--optimize",
+    is_flag=True,
+    help="Re-fit weights to maximize in-sample rank correlation; report OOS.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit the report as JSON.")
+@click.pass_context
+def backtest(
+    ctx: click.Context,
+    since_iso: str | None,
+    holdout_weeks: float,
+    min_score: int | None,
+    optimize: bool,
+    as_json: bool,
+) -> None:
+    """Replay resolved-market whale trades and measure copy EV (Phase 5).
+
+    For each historical whale trade that landed in a *resolved* market, computes
+    whether copying it to settlement was profitable, then reports how well
+    `score.total` ranks the profitable copies. Laptop-only; needs enriched,
+    resolved markets and real (non-sentinel) trade outcomes in the DB.
+    """
+    import datetime as _dt  # local to keep top imports tidy
+
+    cfg = ctx.obj["config"]
+    since_norm: str | None = None
+    if since_iso:
+        since_norm = (
+            _dt.datetime.fromisoformat(since_iso)
+            .replace(tzinfo=_dt.timezone.utc)
+            .isoformat()
+        )
+
+    eff_min_score = min_score if min_score is not None else AlertConfig.from_config(cfg).min_score
+
+    conn = db_module.connect(cfg["db"]["path"])
+    db_module.init_schema(conn)
+    wconfig = WhaleConfig.from_config(cfg)
+    sconfig = ScoringConfig.from_config(cfg)
+
+    try:
+        samples = backtest_module.collect_samples(
+            conn, wconfig, sconfig, since_iso=since_norm, holdout_weeks=holdout_weeks
+        )
+    finally:
+        conn.close()
+
+    if not samples:
+        click.echo(
+            "0 settled whale trades to backtest. Need enriched + resolved markets and "
+            "real trade outcomes (subgraph-only rows carry sentinel outcomes).",
+            err=True,
+        )
+        return
+
+    report = backtest_module.summarize(samples, sconfig.weights, min_score=eff_min_score)
+    opt = (
+        backtest_module.optimize_weights(samples, sconfig) if optimize else None
+    )
+
+    if as_json:
+        click.echo(json.dumps(_backtest_json(report, opt), indent=2, default=_json_default))
+    else:
+        _print_backtest(report, opt)
+
+
+def _json_default(o: object):
+    if isinstance(o, float) and o == float("-inf"):
+        return None
+    raise TypeError(f"not serializable: {type(o)}")
+
+
+def _backtest_json(report, opt) -> dict:
+    from dataclasses import asdict
+
+    out = {"report": asdict(report)}
+    if opt is not None:
+        weights, obj_in, obj_out = opt
+        out["optimized"] = {
+            "weights": weights,
+            "objective_in_sample": obj_in,
+            "objective_out_of_sample": obj_out if obj_out != float("-inf") else None,
+        }
+    return out
+
+
+def _fmt(x: float | None, spec: str = ".3f") -> str:
+    return "n/a" if x is None or x == float("-inf") else format(x, spec)
+
+
+def _print_backtest(report, opt) -> None:
+    click.echo(
+        f"samples={report.n_samples} (in={report.n_in_sample} out={report.n_out_of_sample})  "
+        f"hit_rate={report.hit_rate:.1%}  mean_return={report.mean_return:+.3f}  "
+        f"total_pnl=${report.total_pnl_usdc:,.0f}"
+    )
+    click.echo(
+        f"score<->EV  spearman in={_fmt(report.spearman_in)} out={_fmt(report.spearman_out)}  "
+        f"pearson in={_fmt(report.pearson_in)} out={_fmt(report.pearson_out)}"
+    )
+    click.echo(
+        f"alerted (>= {report.min_score}): n={report.alerted_n}  "
+        f"hit_rate={_fmt(report.alerted_hit_rate, '.1%')}  "
+        f"mean_return={_fmt(report.alerted_mean_return, '+.3f')}"
+    )
+    click.echo("score bucket    n   hit_rate  mean_return     total_pnl")
+    for b in report.buckets:
+        click.echo(
+            f"  [{b.lo:3d},{b.hi:3d})  {b.n:4d}   {b.hit_rate:6.1%}   {b.mean_return:+8.3f}   "
+            f"${b.total_pnl_usdc:>12,.0f}"
+        )
+    if report.cohorts:
+        click.echo("cohort                  n   mean_score  median  mean_return  hit_rate")
+        for c in report.cohorts:
+            click.echo(
+                f"  {c.name:20.20}  {c.n:4d}   {c.mean_score:8.1f}  {c.median_score:6.1f}  "
+                f"{c.mean_return:+9.3f}  {c.hit_rate:7.1%}"
+            )
+    if opt is not None:
+        weights, obj_in, obj_out = opt
+        click.echo(f"optimized weights (in-sample rho={_fmt(obj_in)}, OOS rho={_fmt(obj_out)}):")
+        for name, w in weights.items():
+            click.echo(f"  {name:26} {w:.3f}")
 
 
 if __name__ == "__main__":

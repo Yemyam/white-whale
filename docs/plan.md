@@ -101,7 +101,7 @@ Notes:
 | 2 | Whale filter | done | 0.5 day |
 | 3 | Copy score engine | done | 2-3 days |
 | 4 | Alert emission (JSON drop) | done | 0.5 day |
-| 5 | Backtester | pending | 2-3 days |
+| 5 | Backtester | done | 2-3 days |
 | 6 | Ops (health, refresh jobs, config hot-reload) | pending | 0.5 day |
 |   | Total | | ~8-12 focused days |
 
@@ -146,12 +146,29 @@ Notes:
 - CLI: `alert` (with `--dry-run`) scores whale events and emits; `--since`/`--limit` like `score`
 - Config keys added: `alerts.{min_score, market_cooldown_seconds, drop_dir, schema_version}`
 
-### Phase 5 - Backtester
-- Replay historical resolved markets through the scoring engine
-- For each historical whale trade: was copying it positive EV at settlement?
-- Hold out last 4-8 weeks for out-of-sample evaluation
-- Calibration target: Theo cluster trades consistently >= 75, round-trip arb trades consistently <= 25
-- Runs on laptop, not Pi.
+### Phase 5 - Backtester (done)
+- `backtest.py`: replays whale trades that landed in **resolved** markets through the
+  exact live path (same whale filter, same component inputs) and measures realized
+  **copy EV** at settlement — `direction * (settlement - price) / price` per dollar of
+  notional (BUY long, SELL short), with `copy_pnl_usdc` on a single consistent basis
+- **Components computed once per trade; weights evaluated as a dot product.** Since the
+  nine sub-scores are weight-independent, `BacktestSample.total(weights)` re-scores any
+  weight vector with no DB and no re-run — that's what makes the weight search cheap
+- `summarize`: hit rate, mean copy return, total PnL, score↔EV correlation (Pearson +
+  rank-based Spearman), a score-bucket monotonicity table, an "alerted subset"
+  (total ≥ `min_score`) slice, and per-label / per-cluster cohort stats for the
+  §7 sanity checks (Théo ≥75, arb ≤25)
+- **Holdout is data-relative:** the newest `--holdout-weeks` measured from the latest
+  settled trade (not wall clock), so replays are deterministic
+- `optimize_weights`: deterministic coordinate ascent maximizing **in-sample** rank
+  correlation, renormalized onto the weight simplex; reports the **out-of-sample**
+  objective as the promote/reject signal (never optimized against)
+- CLI: `backtest` (`--since`, `--holdout-weeks`, `--min-score`, `--optimize`, `--json`)
+- **Data dependency:** needs enriched + resolved markets (`markets.resolved=1`,
+  `outcome_resolved` set) and real trade outcomes. Subgraph-backfilled rows carry the
+  Phase 1 sentinel `outcome_index = -1` and are skipped — until the token→outcome join
+  (deferred from Phase 1) and a market-resolution refresh land, the backtest set is
+  RTDS-ingested resolved markets only. Runs on laptop, not Pi.
 
 ### Phase 6 - Ops
 - Health endpoint / heartbeat
