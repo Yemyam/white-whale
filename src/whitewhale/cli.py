@@ -13,6 +13,7 @@ import click
 from whitewhale import config as config_loader
 from whitewhale import db as db_module
 from whitewhale.filter import WhaleConfig, iter_whale_trades
+from whitewhale.scoring import ScoringConfig, score_whale_event
 from whitewhale.ingest.gamma import GammaClient, enrich_pending
 from whitewhale.ingest.rtds import RTDSClient, persist
 from whitewhale.ingest.subgraph import SubgraphClient, backfill_wallet
@@ -273,6 +274,73 @@ def whales(ctx: click.Context, since_iso: str | None, limit: int | None, as_json
             if limit is not None and count >= limit:
                 break
         click.echo(f"{count} whale events", err=True)
+    finally:
+        conn.close()
+
+
+@main.command("score")
+@click.option(
+    "--since",
+    "since_iso",
+    type=str,
+    default=None,
+    help="Only score trades on or after this date (YYYY-MM-DD, UTC).",
+)
+@click.option("--limit", type=int, default=None, help="Stop after N scored events.")
+@click.option("--json", "as_json", is_flag=True, help="Emit the full score object as JSON.")
+@click.pass_context
+def score(ctx: click.Context, since_iso: str | None, limit: int | None, as_json: bool) -> None:
+    """Run whale events through the Phase 3 copy-score engine and print scores.
+
+    End-to-end check of the engine before alert emission (Phase 4): each whale
+    event gets a 0-100 total, a confidence label, and its rationale lines.
+    Scores read precomputed `wallet_stats`; backfill + a stats refresh make them
+    meaningful (an un-backfilled wallet scores on neutral defaults).
+    """
+    import datetime as _dt  # local to keep top imports tidy
+
+    cfg = ctx.obj["config"]
+    since_norm: str | None = None
+    if since_iso:
+        since_norm = (
+            _dt.datetime.fromisoformat(since_iso)
+            .replace(tzinfo=_dt.timezone.utc)
+            .isoformat()
+        )
+
+    conn = db_module.connect(cfg["db"]["path"])
+    db_module.init_schema(conn)
+    wconfig = WhaleConfig.from_config(cfg)
+    sconfig = ScoringConfig.from_config(cfg)
+
+    try:
+        count = 0
+        for event in iter_whale_trades(conn, wconfig, since_iso=since_norm):
+            result = score_whale_event(conn, event, sconfig)
+            if as_json:
+                click.echo(
+                    json.dumps(
+                        {
+                            "tx_hash": event.tx_hash,
+                            "wallet": event.wallet,
+                            "condition_id": event.condition_id,
+                            "size_usdc": event.size_usdc,
+                            "total": result.total,
+                            "confidence": result.confidence,
+                            "components": result.components,
+                            "rationale": result.rationale,
+                        }
+                    )
+                )
+            else:
+                click.echo(
+                    f"{event.occurred_at.isoformat()}  {result.total:3d}  "
+                    f"{result.confidence:6}  {event.wallet}  ${event.size_usdc:,.0f}"
+                )
+            count += 1
+            if limit is not None and count >= limit:
+                break
+        click.echo(f"{count} events scored", err=True)
     finally:
         conn.close()
 

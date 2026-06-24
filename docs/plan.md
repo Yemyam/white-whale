@@ -99,7 +99,7 @@ Notes:
 | 0 | Research smart-money detection + labeled wallet seed | done | 1-2 days |
 | 1 | Ingestion (WS + REST + subgraph backfill) | done | 1-2 days |
 | 2 | Whale filter | done | 0.5 day |
-| 3 | Copy score engine | pending | 2-3 days |
+| 3 | Copy score engine | done | 2-3 days |
 | 4 | Alert emission (JSON drop) | pending | 0.5 day |
 | 5 | Backtester | pending | 2-3 days |
 | 6 | Ops (health, refresh jobs, config hot-reload) | pending | 0.5 day |
@@ -127,11 +127,16 @@ Notes:
 - CLI: `whales` scans ingested trades and prints/JSON-dumps what the filter would emit
 - Config keys added: `whale_filter.dedupe_window_seconds`, `whale_filter.allow_unknown_liquidity`
 
-### Phase 3 - Copy score engine
-- 9 sub-scores computed from precomputed `wallet_stats` table + the trade + market orderbook
-- Weighted sum, config-driven (`config/default.yaml`, hot-reloadable in Phase 6)
-- Sub-score formulas in `docs/research-notes.md` section 5
-- Outputs `{total, confidence, components, rationale[]}`
+### Phase 3 - Copy score engine (done)
+- `scoring/` package: `inputs.py` (typed `ScoreInputs`/`ScoringConfig`/`ScoreResult`), `components.py` (9 pure 0-100 sub-scores + Wilson lower bound), `engine.py` (`score_trade` pure weighting + confidence; `build_inputs`/`score_whale_event` DB assembly)
+- 9 sub-scores from precomputed `wallet_stats` + the trade + market, per `docs/research-notes.md` §5; anti-signals inverted so higher = more copyable
+- Weighted sum is config-driven; `ScoringConfig.from_config` validates weights sum to 1.0 and that all 9 components are present
+- `confidence` independent of `total` (§6): high needs depth≥70 AND total≥60; medium needs depth≥40; else low
+- Missing inputs (un-backfilled wallet, no known mid) fall back to `neutral_score`; `wallet_pnl_score` ranks PnL percentile across wallets with ≥`min_resolved_bets` resolved bets
+- `rationale[]` is templated, notable-driver-only strings (no LLM)
+- CLI: `score` runs whale events through the engine end-to-end (`--json` emits the full score object)
+- Config keys added: `scoring.params.*` (mapping knobs), `scoring.confidence.*`
+- **Known gap (deferred):** `price_impact_score`/`organic_price_score` use `markets.current_price` as a mid proxy; true mid-at-entry needs a live CLOB orderbook fetch on the hot path (Phase 6). `wallet_stats` population (the stats refresh job) is also Phase 6 — until then scored wallets fall back to neutral defaults. Anti-signal weight calibration (arb trades → ≤25) is a Phase 5 backtest outcome, not guaranteed by the default weights.
 
 ### Phase 4 - Alert emission
 - JSON written to a file drop or webhook (depends on bot interface; TBD)

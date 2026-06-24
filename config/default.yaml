@@ -51,3 +51,18 @@ scoring:
     round_trip_window_seconds: 60
     mid_price_band_bps:        30
     mm_turnover_lookback:      50
+  # Sub-score mapping knobs. Sketches from research-notes §5; [CALIBRATE] in
+  # Phase 5. All scores are 0-100, higher = more copyable.
+  params:
+    min_resolved_bets:           5     # wallets below this aren't PnL-rankable
+    history_depth_saturation:    100   # trade_count at which history_depth hits 100
+    time_to_resolution_hours:    168   # taper window (1 week); floor beyond it
+    time_to_resolution_floor:    20
+    price_impact_saturation_bps: 200   # |price-mid| bps that maxes price_impact
+    round_trip_saturation:       20    # round_trip_count_30d that drives non_arb to 0
+    neutral_score:               50    # used when an input is missing
+  # Confidence labels, independent of total (research-notes §6).
+  confidence:
+    high_depth:   70
+    high_total:   60
+    medium_depth: 40
