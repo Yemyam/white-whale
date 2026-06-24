@@ -12,6 +12,7 @@ import click
 
 from whitewhale import config as config_loader
 from whitewhale import db as db_module
+from whitewhale.alert import AlertConfig, AlertEmitter
 from whitewhale.filter import WhaleConfig, iter_whale_trades
 from whitewhale.scoring import ScoringConfig, score_whale_event
 from whitewhale.ingest.gamma import GammaClient, enrich_pending
@@ -341,6 +342,71 @@ def score(ctx: click.Context, since_iso: str | None, limit: int | None, as_json:
             if limit is not None and count >= limit:
                 break
         click.echo(f"{count} events scored", err=True)
+    finally:
+        conn.close()
+
+
+@main.command("alert")
+@click.option(
+    "--since",
+    "since_iso",
+    type=str,
+    default=None,
+    help="Only consider trades on or after this date (YYYY-MM-DD, UTC).",
+)
+@click.option("--limit", type=int, default=None, help="Stop after N events considered.")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Score and report what would fire without persisting or dropping files.",
+)
+@click.pass_context
+def alert(ctx: click.Context, since_iso: str | None, limit: int | None, dry_run: bool) -> None:
+    """Score whale events and emit alerts (Phase 4): JSON file drop + audit row.
+
+    Walks the same whale events as `score`, then applies the alert gates
+    (min score, per-market cooldown, dedupe) and drops a JSON file per alert.
+    """
+    import datetime as _dt  # local to keep top imports tidy
+
+    cfg = ctx.obj["config"]
+    since_norm: str | None = None
+    if since_iso:
+        since_norm = (
+            _dt.datetime.fromisoformat(since_iso)
+            .replace(tzinfo=_dt.timezone.utc)
+            .isoformat()
+        )
+
+    conn = db_module.connect(cfg["db"]["path"])
+    db_module.init_schema(conn)
+    wconfig = WhaleConfig.from_config(cfg)
+    sconfig = ScoringConfig.from_config(cfg)
+    aconfig = AlertConfig.from_config(cfg)
+    emitter = AlertEmitter(conn, aconfig)
+
+    try:
+        considered = emitted = 0
+        for event in iter_whale_trades(conn, wconfig, since_iso=since_norm):
+            result = score_whale_event(conn, event, sconfig)
+            considered += 1
+            if dry_run:
+                fired = result.total >= aconfig.min_score
+                emitted += fired
+                click.echo(
+                    f"{'WOULD-FIRE' if fired else 'skip      '}  {result.total:3d}  "
+                    f"{result.confidence:6}  {event.wallet}  {event.condition_id}"
+                )
+            else:
+                outcome = emitter.emit(event, result)
+                if outcome.emitted:
+                    emitted += 1
+                    click.echo(f"FIRED  {result.total:3d}  {outcome.alert_id}  -> {outcome.path}")
+                else:
+                    click.echo(f"skip   {result.total:3d}  ({outcome.reason})  {event.condition_id}")
+            if limit is not None and considered >= limit:
+                break
+        click.echo(f"{emitted} alerts from {considered} events considered", err=True)
     finally:
         conn.close()
 

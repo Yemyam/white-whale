@@ -34,6 +34,16 @@ whale_filter:
   # can't clear the liquidity floor. Keep false so we don't alert blind.
   allow_unknown_liquidity: false
 
+alerts:
+  # Only emit when the copy score clears this bar.
+  min_score: 60
+  # At most one alert per market in this window (measured on trade time), so a
+  # market many whales pile into doesn't spam the bot.
+  market_cooldown_seconds: 300
+  # File-drop sink: one JSON file per alert lands here for the existing bot.
+  drop_dir: ./alerts
+  schema_version: "1.0"
+
 scoring:
   # Default weights from docs/research-notes.md §5.
   # Sum must equal 1.0. Hot-reloadable in Phase 6.

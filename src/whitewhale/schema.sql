@@ -80,3 +80,5 @@ CREATE TABLE IF NOT EXISTS alerts (
 
 CREATE INDEX IF NOT EXISTS idx_alerts_emitted_at ON alerts(emitted_at);
 CREATE INDEX IF NOT EXISTS idx_alerts_score ON alerts(score_total);
+-- One alert per trade: lets emission be idempotent via INSERT OR IGNORE.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_trade ON alerts(tx_hash, log_index);

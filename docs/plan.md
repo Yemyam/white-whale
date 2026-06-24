@@ -100,7 +100,7 @@ Notes:
 | 1 | Ingestion (WS + REST + subgraph backfill) | done | 1-2 days |
 | 2 | Whale filter | done | 0.5 day |
 | 3 | Copy score engine | done | 2-3 days |
-| 4 | Alert emission (JSON drop) | pending | 0.5 day |
+| 4 | Alert emission (JSON drop) | done | 0.5 day |
 | 5 | Backtester | pending | 2-3 days |
 | 6 | Ops (health, refresh jobs, config hot-reload) | pending | 0.5 day |
 |   | Total | | ~8-12 focused days |
@@ -138,10 +138,13 @@ Notes:
 - Config keys added: `scoring.params.*` (mapping knobs), `scoring.confidence.*`
 - **Known gap (deferred):** `price_impact_score`/`organic_price_score` use `markets.current_price` as a mid proxy; true mid-at-entry needs a live CLOB orderbook fetch on the hot path (Phase 6). `wallet_stats` population (the stats refresh job) is also Phase 6 — until then scored wallets fall back to neutral defaults. Anti-signal weight calibration (arb trades → ≤25) is a Phase 5 backtest outcome, not guaranteed by the default weights.
 
-### Phase 4 - Alert emission
-- JSON written to a file drop or webhook (depends on bot interface; TBD)
-- Rate-limit + dedupe so a single market churn doesn't spam
-- Persist alert to `alerts` table for audit
+### Phase 4 - Alert emission (done)
+- `alert.py`: `build_payload` (assembles the agreed alert JSON from the event + score + DB), `AlertEmitter` (gates → persist → drop), `AlertConfig`
+- Sink: **file drop** (one JSON file per alert in `alerts.drop_dir`) — the architecture's "JSON drop to existing bot". `_write_sink` is the only I/O seam, so a webhook sink slots in there later without touching gating
+- Three gates stop a churning market from spamming: (1) score gate `total >= min_score`, (2) per-market cooldown measured on **trade time** (deterministic for replay), (3) idempotent dedupe via `INSERT OR IGNORE` on new `UNIQUE(tx_hash, log_index)` index
+- Persists every fired alert to the `alerts` table for audit; the dropped file is byte-identical to the stored `payload_json`
+- CLI: `alert` (with `--dry-run`) scores whale events and emits; `--since`/`--limit` like `score`
+- Config keys added: `alerts.{min_score, market_cooldown_seconds, drop_dir, schema_version}`
 
 ### Phase 5 - Backtester
 - Replay historical resolved markets through the scoring engine
