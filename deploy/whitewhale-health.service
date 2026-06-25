@@ -1,0 +1,17 @@
+[Unit]
+Description=White Whale - health endpoint
+After=network.target
+
+[Service]
+Type=simple
+User=whitewhale
+WorkingDirectory=/opt/whitewhale
+Environment=WHITEWHALE_CONFIG=/opt/whitewhale/config/local.yaml
+# Reads health.host/health.port from config. Set health.host: 0.0.0.0 to expose
+# the heartbeat to another host on the LAN; default 127.0.0.1 is local-only.
+ExecStart=/opt/whitewhale/.venv/bin/whitewhale --config ${WHITEWHALE_CONFIG} health --serve
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

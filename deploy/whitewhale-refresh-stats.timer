@@ -1,0 +1,13 @@
+[Unit]
+Description=White Whale - daily wallet_stats refresh
+
+[Timer]
+# Daily, a little after midnight local time. Persistent=true catches up a missed
+# run if the Pi was off at the scheduled time.
+OnCalendar=*-*-* 00:30:00
+Persistent=true
+# Jitter so a fleet of Pis doesn't all hit the subgraph at the same instant.
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

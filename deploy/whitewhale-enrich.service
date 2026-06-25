@@ -1,0 +1,18 @@
+[Unit]
+Description=White Whale - Gamma market enricher (loop)
+After=network-online.target whitewhale-ingest.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=whitewhale
+WorkingDirectory=/opt/whitewhale
+Environment=WHITEWHALE_CONFIG=/opt/whitewhale/config/local.yaml
+# --loop re-reads limit/max_age from the config each cycle (hot-reload), so you
+# can retune without a restart. --interval overrides the cadence if needed.
+ExecStart=/opt/whitewhale/.venv/bin/whitewhale --config ${WHITEWHALE_CONFIG} enrich-markets --loop
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

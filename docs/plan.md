@@ -102,7 +102,7 @@ Notes:
 | 3 | Copy score engine | done | 2-3 days |
 | 4 | Alert emission (JSON drop) | done | 0.5 day |
 | 5 | Backtester | done | 2-3 days |
-| 6 | Ops (health, refresh jobs, config hot-reload) | pending | 0.5 day |
+| 6 | Ops (health, refresh jobs, config hot-reload) | done | 0.5 day |
 |   | Total | | ~8-12 focused days |
 
 ### Phase 0 - Research & labeled wallet set (done)
@@ -170,11 +170,33 @@ Notes:
   (deferred from Phase 1) and a market-resolution refresh land, the backtest set is
   RTDS-ingested resolved markets only. Runs on laptop, not Pi.
 
-### Phase 6 - Ops
-- Health endpoint / heartbeat
-- Per-wallet stats refresh job (daily incremental)
-- Config hot-reload (re-read YAML without restart)
-- `systemd` unit for the Pi
+### Phase 6 - Ops (done)
+- **Wallet-stats refresh (`stats.py`, CLI `refresh-stats`):** the keystone — populates
+  the precomputed `wallet_stats` the scorer reads on the hot path, so scoring stops
+  falling back to neutral defaults (closes the Phase 3 gap). Computes realized PnL /
+  win-loss per fill to settlement (long BUY / short SELL, reusing `backtest.copy_pnl_usdc`;
+  no FIFO inventory — each fill scored independently), median/p90 size, and the 30d
+  arb/MM churn signals (`round_trip_count_30d` = fast same-market direction flips;
+  `two_sided_ratio_30d` = share of trades in markets the wallet traded both sides of).
+  Incremental by default (only wallets with trades newer than their last refresh);
+  `--all` forces a full recompute; `--loop` for a laptop daemon.
+- **Health endpoint (`health.py`, CLI `health [--serve]`):** a `health` table holds one
+  upserted heartbeat row per long-running component (`ingest`, `enrich-markets`,
+  `refresh-stats` write them). `gather_status` rolls heartbeats up with cheap DB counts;
+  `--serve` answers `GET /health` (200 healthy / 503 if any heartbeat is older than
+  `stale_after_seconds`) over the stdlib `http.server` — no web-framework dependency.
+- **Config hot-reload (`ReloadableConfig`):** mtime-watched re-read of the YAML; the
+  periodic loops (`enrich-markets --loop`, `refresh-stats --loop`) call
+  `reload_if_changed()` each cycle to retune thresholds/weights without a restart. A
+  malformed mid-edit file is swallowed (keep last-good). The `ingest` service reads
+  config once at start — restart it to pick up changes there.
+- **systemd units (`deploy/`):** `ingest`, `enrich` (loop), `health` (serve) as
+  long-running services; `refresh-stats` as a one-shot driven by a daily `.timer`
+  (`Persistent=true`, jittered). `deploy/README.md` covers install/operate.
+- **Still deferred (not Phase 6 scope):** the live-CLOB-orderbook hot-path fetch for a
+  true mid-at-entry (`price_impact_score`/`organic_price_score` still use
+  `markets.current_price` as the mid proxy), the token→outcome join for subgraph rows,
+  and contract tests for RTDS/Gamma schema drift.
 
 ## Risks
 

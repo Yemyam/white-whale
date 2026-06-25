@@ -1,0 +1,22 @@
+[Unit]
+Description=White Whale - RTDS trade ingestor
+Documentation=https://github.com/  (white-whale)
+# Network-online so the WebSocket can connect on boot.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=whitewhale
+WorkingDirectory=/opt/whitewhale
+Environment=WHITEWHALE_CONFIG=/opt/whitewhale/config/local.yaml
+ExecStart=/opt/whitewhale/.venv/bin/whitewhale --config ${WHITEWHALE_CONFIG} ingest
+# The RTDS client auto-reconnects; if it exits anyway, restart with backoff.
+Restart=always
+RestartSec=5
+# SD-card friendliness: don't thrash the journal on a flapping connection.
+StartLimitIntervalSec=120
+StartLimitBurst=10
+
+[Install]
+WantedBy=multi-user.target

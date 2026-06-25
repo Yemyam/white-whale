@@ -1,0 +1,12 @@
+[Unit]
+Description=White Whale - wallet_stats refresh (one-shot, driven by the timer)
+After=network.target
+
+[Service]
+Type=oneshot
+User=whitewhale
+WorkingDirectory=/opt/whitewhale
+Environment=WHITEWHALE_CONFIG=/opt/whitewhale/config/local.yaml
+# One-shot incremental pass: only wallets with new trades are recomputed. The
+# timer schedules it; no --loop here. Add --all for an occasional full rebuild.
+ExecStart=/opt/whitewhale/.venv/bin/whitewhale --config ${WHITEWHALE_CONFIG} refresh-stats
