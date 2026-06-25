@@ -13,6 +13,8 @@ import click
 from whitewhale import backtest as backtest_module
 from whitewhale import config as config_loader
 from whitewhale import db as db_module
+from whitewhale import health as health_module
+from whitewhale import stats as stats_module
 from whitewhale.alert import AlertConfig, AlertEmitter
 from whitewhale.filter import WhaleConfig, iter_whale_trades
 from whitewhale.scoring import ScoringConfig, score_whale_event
@@ -42,6 +44,7 @@ def main(ctx: click.Context, config_path: str | None, verbose: bool) -> None:
     """White Whale - Polymarket whale alert system."""
     _setup_logging(verbose)
     ctx.ensure_object(dict)
+    ctx.obj["config_path"] = config_path
     ctx.obj["config"] = config_loader.load(config_path)
 
 
@@ -101,11 +104,13 @@ def ingest(ctx: click.Context) -> None:
 
     async def _run() -> None:
         count = 0
+        health_module.write_heartbeat(conn, "ingest", {"trades": count})
         async for trade in client.trades():
             persist(conn, trade)
             count += 1
             if count % 100 == 0:
                 logging.info("persisted %d trades", count)
+                health_module.write_heartbeat(conn, "ingest", {"trades": count})
         logging.info("ingest stopped after %d trades", count)
 
     try:
@@ -144,22 +149,32 @@ def enrich_markets(
     conn = db_module.connect(db_path)
     db_module.init_schema(conn)
 
+    # In --loop mode, re-read limit/max_age each cycle so they can be tuned live.
+    reloadable = config_loader.ReloadableConfig(ctx.obj["config_path"])
+
     async def _run() -> None:
         async with GammaClient(
             base_url=gcfg["base_url"],
             timeout_seconds=gcfg["request_timeout_seconds"],
             min_request_interval_seconds=gcfg["min_request_interval_seconds"],
         ) as client:
+            cur_limit, cur_max_age = eff_limit, eff_max_age
             while True:
                 refreshed = await enrich_pending(
                     conn,
                     client,
-                    limit=eff_limit,
-                    max_age_seconds=eff_max_age,
+                    limit=cur_limit,
+                    max_age_seconds=cur_max_age,
                 )
                 if not continuous:
                     click.echo(f"refreshed {refreshed} markets")
                     return
+                health_module.write_heartbeat(conn, "enrich-markets", {"refreshed": refreshed})
+                if reloadable.reload_if_changed() and limit is None and max_age_seconds is None:
+                    g = reloadable.data["ingest"]["gamma"]
+                    cur_limit = g["refresh_batch_limit"]
+                    cur_max_age = g["refresh_max_age_seconds"]
+                    logging.info("reloaded enrich config: limit=%s max_age=%s", cur_limit, cur_max_age)
                 await asyncio.sleep(interval)
 
     try:
@@ -410,6 +425,116 @@ def alert(ctx: click.Context, since_iso: str | None, limit: int | None, dry_run:
         click.echo(f"{emitted} alerts from {considered} events considered", err=True)
     finally:
         conn.close()
+
+
+@main.command("refresh-stats")
+@click.option("--wallet", "wallets", multiple=True, help="Refresh only these wallets (repeatable).")
+@click.option("--all", "refresh_all", is_flag=True, help="Recompute every wallet, not just stale ones.")
+@click.option(
+    "--as-of",
+    type=str,
+    default=None,
+    help="Reference time for the 30d windows (ISO 8601, UTC). Defaults to now.",
+)
+@click.option("--loop", "continuous", is_flag=True, help="Refresh on an interval (daemon mode).")
+@click.option(
+    "--interval",
+    type=int,
+    default=None,
+    help="Seconds between refreshes in --loop mode. Defaults to stats.refresh_interval_seconds.",
+)
+@click.pass_context
+def refresh_stats(
+    ctx: click.Context,
+    wallets: tuple[str, ...],
+    refresh_all: bool,
+    as_of: str | None,
+    continuous: bool,
+    interval: int | None,
+) -> None:
+    """Recompute the precomputed `wallet_stats` the score engine reads (Phase 6).
+
+    Cold-path job: scores fall back to neutral defaults until this populates PnL,
+    win rate, sizes, and the arb/MM churn signals. Cheap to rerun (only stale
+    wallets unless --all). Run daily via the systemd timer, or --loop on a laptop.
+    """
+    import datetime as _dt
+    import time as _time
+
+    cfg = ctx.obj["config"]
+    scfg = cfg.get("stats", {})
+    rt_window = float(
+        cfg.get("scoring", {}).get("thresholds", {}).get("round_trip_window_seconds", 60)
+    )
+    eff_interval = interval if interval is not None else int(scfg.get("refresh_interval_seconds", 86400))
+    as_of_dt = (
+        _dt.datetime.fromisoformat(as_of).replace(tzinfo=_dt.timezone.utc) if as_of else None
+    )
+
+    conn = db_module.connect(cfg["db"]["path"])
+    db_module.init_schema(conn)
+    reloadable = config_loader.ReloadableConfig(ctx.obj["config_path"])
+
+    try:
+        while True:
+            n = stats_module.refresh_wallet_stats(
+                conn,
+                as_of=as_of_dt,
+                wallets=list(wallets) or None,
+                only_stale=not refresh_all,
+                round_trip_window_seconds=rt_window,
+            )
+            health_module.write_heartbeat(conn, "refresh-stats", {"wallets_refreshed": n})
+            click.echo(f"refreshed {n} wallets")
+            if not continuous:
+                return
+            if reloadable.reload_if_changed():
+                rt_window = float(
+                    reloadable.data.get("scoring", {})
+                    .get("thresholds", {})
+                    .get("round_trip_window_seconds", 60)
+                )
+                if interval is None:
+                    eff_interval = int(reloadable.data.get("stats", {}).get("refresh_interval_seconds", 86400))
+                logging.info("reloaded refresh-stats config: rt_window=%s interval=%s", rt_window, eff_interval)
+            _time.sleep(eff_interval)
+    finally:
+        conn.close()
+
+
+@main.command("health")
+@click.option("--serve", is_flag=True, help="Run the HTTP health server instead of printing once.")
+@click.option("--host", type=str, default=None, help="Bind host (default health.host).")
+@click.option("--port", type=int, default=None, help="Bind port (default health.port).")
+@click.pass_context
+def health(ctx: click.Context, serve: bool, host: str | None, port: int | None) -> None:
+    """Report system health (Phase 6): DB counts, freshness, and heartbeats.
+
+    One-shot prints a JSON snapshot and exits non-zero if unhealthy. `--serve`
+    runs a stdlib HTTP server answering GET /health (200 healthy, 503 stale).
+    """
+    cfg = ctx.obj["config"]
+    hcfg = cfg.get("health", {})
+    stale_after = float(hcfg.get("stale_after_seconds", 900))
+
+    if serve:
+        eff_host = host or hcfg.get("host", "127.0.0.1")
+        eff_port = port if port is not None else int(hcfg.get("port", 8787))
+        click.echo(f"serving health on http://{eff_host}:{eff_port}/health", err=True)
+        health_module.serve(
+            cfg["db"]["path"], host=eff_host, port=eff_port, stale_after_seconds=stale_after
+        )
+        return
+
+    conn = db_module.connect(cfg["db"]["path"])
+    db_module.init_schema(conn)
+    try:
+        status = health_module.gather_status(conn, stale_after_seconds=stale_after)
+    finally:
+        conn.close()
+    click.echo(json.dumps(status, indent=2))
+    if not status["healthy"]:
+        raise SystemExit(1)
 
 
 @main.command("backtest")

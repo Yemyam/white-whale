@@ -44,6 +44,19 @@ alerts:
   drop_dir: ./alerts
   schema_version: "1.0"
 
+stats:
+  # Cold-path wallet_stats refresh (Phase 6). The daily systemd timer runs the
+  # one-shot job; this interval is only used by `refresh-stats --loop`.
+  refresh_interval_seconds: 86400
+
+health:
+  # `whitewhale health --serve` binds here. 127.0.0.1 by default; set 0.0.0.0 to
+  # expose the heartbeat to another host on the LAN.
+  host: 127.0.0.1
+  port: 8787
+  # A component's heartbeat older than this marks the system unhealthy (HTTP 503).
+  stale_after_seconds: 900
+
 scoring:
   # Default weights from docs/research-notes.md §5.
   # Sum must equal 1.0. Hot-reloadable in Phase 6.
